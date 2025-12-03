@@ -1,0 +1,28 @@
+name = "tg-sessions-api"
+main = "src/worker.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Static bearer token used by the admin/listener clients when calling the worker.
+SESSIONS_API_TOKEN = "REPLACE_WITH_SESSIONS_API_TOKEN"
+# Default Telegram API credentials exposed to the listener workers.
+TELEGRAM_API_ID = "27418503"
+TELEGRAM_API_HASH = "911f278e674b5aaa7a4ecf14a49ea4d7"
+
+[[kv_namespaces]]
+binding = "SESSIONS_KV"
+id = "362d6c1c77c648de8edf27c4f456bf60"
+
+# --- Durable Objects binding (you already have this) ---
+[[durable_objects.bindings]]
+name = "LOGIN_SESSIONS"
+class_name = "LoginSessionDurable"
+
+# --- Migrations (add this) ---
+[[migrations]]
+tag = "v1"                  # any unique, never-reused tag
+new_classes = ["LoginSessionDurable"]
+
+
+# Replace the placeholder values above with the real credentials before deploying.

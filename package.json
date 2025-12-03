@@ -1,0 +1,29 @@
+{
+  "name": "telegram-listener-admin-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker control-plane for Telegram session management.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run"
+  },
+  "keywords": [
+    "cloudflare",
+    "telegram",
+    "worker"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "hono": "^4.10.5",
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251111.0",
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.8",
+    "wrangler": "^3.100.0"
+  }
+}
