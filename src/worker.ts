@@ -250,6 +250,13 @@ export const createApp = () => {
         JSON_HEADERS
       );
     }
+    if (body && typeof body === 'object' && (body as any).status === 'SIGNED_IN') {
+      const signedIn = body as SignedInResponse;
+      const result = await persistSignedInResult(c.env, signedIn);
+      signedIn.stored = result.stored;
+      signedIn.version = result.version;
+      return c.json(signedIn, 200, JSON_HEADERS);
+    }
     return c.json(body, 200, JSON_HEADERS);
   });
 
@@ -274,6 +281,13 @@ export const createApp = () => {
         response.status as ContentfulStatusCode,
         JSON_HEADERS
       );
+    }
+    if (body && typeof body === 'object' && (body as any).status === 'SIGNED_IN') {
+      const signedIn = body as SignedInResponse;
+      const result = await persistSignedInResult(c.env, signedIn);
+      signedIn.stored = result.stored;
+      signedIn.version = result.version;
+      return c.json(signedIn, 200, JSON_HEADERS);
     }
     return c.json(body, 200, JSON_HEADERS);
   });
@@ -1244,7 +1258,12 @@ async function upsertSessionRecord(env: Env, payload: Record<string, unknown>): 
     telegram_api_id: telegramApiId,
     telegram_api_hash: telegramApiHash,
     session_string: sessionString,
-    webhook_url: coalesce(payload.webhook_url as any, existing?.webhook_url, null),
+    webhook_url:
+      typeof payload.webhook_url === 'string'
+        ? payload.webhook_url
+        : typeof existing?.webhook_url === 'string'
+          ? existing.webhook_url
+          : null,
     webhook_enabled: coalesceBoolean(payload.webhook_enabled, existing?.webhook_enabled, true),
     allowed_chat_types: coalesce(payload.allowed_chat_types as any, existing?.allowed_chat_types, DEFAULT_ALLOWED_CHAT_TYPES),
     group_allowlist: coalesce(payload.group_allowlist as any, existing?.group_allowlist, ''),
@@ -1263,6 +1282,34 @@ async function upsertSessionRecord(env: Env, payload: Record<string, unknown>): 
   await updateIndex(kv, idRaw, true);
   const version = await bumpVersion(env);
   return { ok: true, id: idRaw, version };
+}
+
+async function persistSignedInResult(env: Env, signedIn: SignedInResponse): Promise<{ stored: boolean; version: number | null }> {
+  if (signedIn.stored && signedIn.version !== null) {
+    return { stored: signedIn.stored, version: signedIn.version };
+  }
+
+  try {
+    const payload: Record<string, unknown> = {
+      id: signedIn.id,
+      account_id: signedIn.id,
+      session_string: signedIn.session_string,
+      telegram_api_id: signedIn.telegram_api_id,
+      telegram_api_hash: signedIn.telegram_api_hash,
+      webhook_url: null,
+      webhook_enabled: true,
+      enabled: true
+    };
+
+    const result = await upsertSessionRecord(env, payload);
+    return { stored: true, version: result.version };
+  } catch (error) {
+    console.error('failed to persist session from signed-in response', {
+      id: signedIn.id,
+      error
+    });
+    return { stored: signedIn.stored, version: signedIn.version ?? null };
+  }
 }
 
 const app = createApp();
