@@ -7,6 +7,24 @@ import { StringSession } from 'telegram/sessions';
 
 type LoginStatus = 'CODE_SENT' | 'PASSWORD_REQUIRED' | 'SIGNED_IN' | 'ERROR';
 
+export interface PreviewUser {
+  id: string | number | null;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+export interface SignedInResponse {
+  status: 'SIGNED_IN';
+  stored: boolean;
+  id: string;
+  version: number | null;
+  preview_user: PreviewUser | null;
+  session_string: string;
+  telegram_api_id: number;
+  telegram_api_hash: string | null;
+}
+
 export interface SessionDefaults {
   webhook_url?: string | null;
   webhook_enabled?: boolean;
@@ -31,7 +49,7 @@ interface PersistSessionContext {
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SESSION_PREFIX = 'tgs:acct:';
 const LOGIN_SESSION_PREFIX = 'tgs:login:';
-const INDEX_KEY = 'tgs:index';
+const INDEX_KEY = 'sessions_index_v1';
 const VERSION_KEY = 'tgs:version';
 const LOGIN_STATE_KEY = 'login_state';
 const DEFAULT_ALLOWED_CHAT_TYPES = 'group,supergroup,channel,private';
@@ -427,11 +445,11 @@ export const createApp = () => {
 
     const kv = c.env.SESSIONS_KV;
 
-    const list = await kv.list({ prefix: SESSION_PREFIX });
+    const ids = await readIndex(kv);
     const sessions: SessionResponse[] = [];
 
-    for (const { name } of list.keys) {
-      const record = (await kv.get(name, { type: 'json' })) as SessionRecord | null;
+    for (const accountId of ids) {
+      const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
       if (!record) continue;
       if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
         continue;
@@ -650,11 +668,24 @@ async function bumpVersion(env: Env): Promise<number> {
   return next;
 }
 
+async function readIndex(kv: KVNamespace): Promise<string[]> {
+  const raw = await kv.get(INDEX_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry) => typeof entry === 'string' && entry.length > 0);
+    }
+  } catch (err) {
+    // fall through to empty
+  }
+  return [];
+}
+
 async function updateIndex(kv: KVNamespace, id: string, add: boolean) {
   try {
-    const current = (await kv.get(INDEX_KEY)) ?? '[]';
-    const parsed = JSON.parse(current) as string[];
-    const set = new Set(parsed);
+    const current = await readIndex(kv);
+    const set = new Set(current);
     if (add) {
       set.add(id);
     } else {
@@ -770,6 +801,16 @@ function formatPreviewUser(user: any) {
     first_name: user.firstName ?? user.first_name ?? null,
     last_name: user.lastName ?? user.last_name ?? null
   };
+}
+
+async function sessionRecordExists(env: Env, accountId: string): Promise<boolean> {
+  try {
+    const existing = await env.SESSIONS_KV.get(accountKey(accountId), { type: 'json' });
+    return Boolean(existing);
+  } catch (error) {
+    console.warn('failed to check session existence', { accountId, error });
+    return false;
+  }
 }
 
 interface LoginSessionStored {
@@ -911,6 +952,7 @@ export class LoginSessionDurable {
 
       const me = await state.client.getMe();
       state.sessionString = state.session.save();
+      const existingStored = await sessionRecordExists(this.env, state.accountId);
       let persistResult: PersistResult | null = null;
       try {
         persistResult = await persistSession(
@@ -928,6 +970,8 @@ export class LoginSessionDurable {
         console.error('failed to persist session after code login', persistError);
       }
 
+      const stored = existingStored || (persistResult?.ok ?? false);
+
       await saveLoginSessionSnapshot(
         this.env,
         {
@@ -937,7 +981,7 @@ export class LoginSessionDurable {
           apiId: state.apiId,
           apiHash: state.apiHash,
           sessionString: state.sessionString,
-          stored: persistResult?.ok ?? false,
+          stored,
           persistedId: persistResult?.id ?? null,
           version: persistResult?.version ?? null
         },
@@ -948,13 +992,18 @@ export class LoginSessionDurable {
       await this.cleanupStorage();
       this.stateData = null;
 
-      return this.json({
+      const response: SignedInResponse = {
         status: 'SIGNED_IN',
-        stored: persistResult?.ok ?? false,
+        stored,
         id: persistResult?.id ?? state.accountId,
         version: persistResult?.version ?? null,
-        preview_user: formatPreviewUser(me)
-      });
+        preview_user: formatPreviewUser(me),
+        session_string: state.sessionString,
+        telegram_api_id: state.apiId,
+        telegram_api_hash: state.apiHash
+      };
+
+      return this.json(response);
     } catch (err: any) {
       if (isPasswordNeededError(err)) {
         await this.ensureClient();
@@ -998,6 +1047,7 @@ export class LoginSessionDurable {
       await state.client.invoke(new Api.auth.CheckPassword({ password: passwordCheck }));
       const me = await state.client.getMe();
       state.sessionString = state.session.save();
+      const existingStored = await sessionRecordExists(this.env, state.accountId);
       let persistResult: PersistResult | null = null;
       try {
         persistResult = await persistSession(
@@ -1015,6 +1065,8 @@ export class LoginSessionDurable {
         console.error('failed to persist session after password login', persistError);
       }
 
+      const stored = existingStored || (persistResult?.ok ?? false);
+
       await saveLoginSessionSnapshot(
         this.env,
         {
@@ -1024,7 +1076,7 @@ export class LoginSessionDurable {
           apiId: state.apiId,
           apiHash: state.apiHash,
           sessionString: state.sessionString,
-          stored: persistResult?.ok ?? false,
+          stored,
           persistedId: persistResult?.id ?? null,
           version: persistResult?.version ?? null
         },
@@ -1035,13 +1087,18 @@ export class LoginSessionDurable {
       await this.cleanupStorage();
       this.stateData = null;
 
-      return this.json({
+      const response: SignedInResponse = {
         status: 'SIGNED_IN',
-        stored: persistResult?.ok ?? false,
+        stored,
         id: persistResult?.id ?? state.accountId,
         version: persistResult?.version ?? null,
-        preview_user: formatPreviewUser(me)
-      });
+        preview_user: formatPreviewUser(me),
+        session_string: state.sessionString,
+        telegram_api_id: state.apiId,
+        telegram_api_hash: state.apiHash
+      };
+
+      return this.json(response);
     } catch (err) {
       console.error('durable auth/password error', err);
       await this.disconnectClient();
