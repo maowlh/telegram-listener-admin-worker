@@ -7,6 +7,24 @@ import { StringSession } from 'telegram/sessions';
 
 type LoginStatus = 'CODE_SENT' | 'PASSWORD_REQUIRED' | 'SIGNED_IN' | 'ERROR';
 
+export interface PreviewUser {
+  id: string | number | null;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+export interface SignedInResponse {
+  status: 'SIGNED_IN';
+  stored: boolean;
+  id: string;
+  version: number | null;
+  preview_user: PreviewUser | null;
+  session_string: string;
+  telegram_api_id: number;
+  telegram_api_hash: string | null;
+}
+
 export interface SessionDefaults {
   webhook_url?: string | null;
   webhook_enabled?: boolean;
@@ -31,7 +49,7 @@ interface PersistSessionContext {
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SESSION_PREFIX = 'tgs:acct:';
 const LOGIN_SESSION_PREFIX = 'tgs:login:';
-const INDEX_KEY = 'tgs:index';
+const INDEX_KEY = 'sessions_index_v1';
 const VERSION_KEY = 'tgs:version';
 const LOGIN_STATE_KEY = 'login_state';
 const DEFAULT_ALLOWED_CHAT_TYPES = 'group,supergroup,channel,private';
@@ -95,6 +113,7 @@ export interface Env {
 
 export interface SessionRecord {
   id: string;
+  account_id: string;
   phone: string | null;
   telegram_api_id: number;
   telegram_api_hash: string | null;
@@ -116,6 +135,7 @@ export interface SessionRecord {
 
 export interface SessionResponse {
   id: string;
+  account_id: string;
   telegram_api_id: number;
   telegram_api_hash: string | null;
   session_string: string;
@@ -308,6 +328,7 @@ export const createApp = () => {
     if (!record) {
       return jsonError(c, 'not_found', 404);
     }
+    record.account_id = record.account_id ?? record.id;
 
     const body = await parseJsonBody(c);
     if (!body || typeof body !== 'object') {
@@ -339,6 +360,7 @@ export const createApp = () => {
     if (!record) {
       return jsonError(c, 'not_found', 404);
     }
+    record.account_id = record.account_id ?? record.id;
 
     const body = await parseJsonBody(c);
     if (!body || typeof body !== 'object') {
@@ -423,11 +445,11 @@ export const createApp = () => {
 
     const kv = c.env.SESSIONS_KV;
 
-    const list = await kv.list({ prefix: SESSION_PREFIX });
+    const ids = await readIndex(kv);
     const sessions: SessionResponse[] = [];
 
-    for (const { name } of list.keys) {
-      const record = (await kv.get(name, { type: 'json' })) as SessionRecord | null;
+    for (const accountId of ids) {
+      const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
       if (!record) continue;
       if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
         continue;
@@ -435,8 +457,10 @@ export const createApp = () => {
       if ((fnv1a(record.id) % total) !== shard) {
         continue;
       }
+      const resolvedAccountId = record.account_id ?? record.id;
       sessions.push({
         id: record.id,
+        account_id: resolvedAccountId,
         telegram_api_id: record.telegram_api_id,
         telegram_api_hash: record.telegram_api_hash,
         session_string: record.session_string,
@@ -496,6 +520,7 @@ async function handleToggleEnable(c: Context<{ Bindings: Env }>, enable: boolean
   if (!record) {
     return jsonError(c, 'not_found', 404);
   }
+  record.account_id = record.account_id ?? record.id;
   const body = await parseJsonBody(c);
   const reason = !enable && body && typeof body === 'object' && typeof body.reason === 'string'
     ? body.reason
@@ -536,6 +561,22 @@ async function parseJsonBody(c: Context): Promise<any> {
 
 function jsonError(c: Context, error: string, status: number = 400) {
   return c.json({ error }, status as any, JSON_HEADERS);
+}
+
+function resolveAccountId(payload: Record<string, unknown>, existing: SessionRecord | null): string {
+  const idValue = typeof payload.id === 'string' ? payload.id.trim() : '';
+  const accountIdValue = typeof payload.account_id === 'string' ? payload.account_id.trim() : '';
+  const existingId = existing?.account_id ?? existing?.id ?? '';
+
+  if (idValue && accountIdValue && idValue !== accountIdValue) {
+    throw new ApiError(400, 'account_id_mismatch');
+  }
+
+  const resolved = idValue || accountIdValue || existingId;
+  if (!resolved) {
+    throw new ApiError(400, 'id_required');
+  }
+  return resolved;
 }
 
 function resolveTelegramApiId(value: unknown, existing: number | undefined, env: Env): number | null {
@@ -627,11 +668,24 @@ async function bumpVersion(env: Env): Promise<number> {
   return next;
 }
 
+async function readIndex(kv: KVNamespace): Promise<string[]> {
+  const raw = await kv.get(INDEX_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry) => typeof entry === 'string' && entry.length > 0);
+    }
+  } catch (err) {
+    // fall through to empty
+  }
+  return [];
+}
+
 async function updateIndex(kv: KVNamespace, id: string, add: boolean) {
   try {
-    const current = (await kv.get(INDEX_KEY)) ?? '[]';
-    const parsed = JSON.parse(current) as string[];
-    const set = new Set(parsed);
+    const current = await readIndex(kv);
+    const set = new Set(current);
     if (add) {
       set.add(id);
     } else {
@@ -672,6 +726,7 @@ async function persistSession(
 ): Promise<PersistResult> {
   const body: Record<string, unknown> = {
     id: context.accountId,
+    account_id: context.accountId,
     phone: context.phone,
     session_string: sessionString,
     telegram_api_id: context.apiId,
@@ -746,6 +801,16 @@ function formatPreviewUser(user: any) {
     first_name: user.firstName ?? user.first_name ?? null,
     last_name: user.lastName ?? user.last_name ?? null
   };
+}
+
+async function sessionRecordExists(env: Env, accountId: string): Promise<boolean> {
+  try {
+    const existing = await env.SESSIONS_KV.get(accountKey(accountId), { type: 'json' });
+    return Boolean(existing);
+  } catch (error) {
+    console.warn('failed to check session existence', { accountId, error });
+    return false;
+  }
 }
 
 interface LoginSessionStored {
@@ -887,6 +952,7 @@ export class LoginSessionDurable {
 
       const me = await state.client.getMe();
       state.sessionString = state.session.save();
+      const existingStored = await sessionRecordExists(this.env, state.accountId);
       let persistResult: PersistResult | null = null;
       try {
         persistResult = await persistSession(
@@ -904,6 +970,8 @@ export class LoginSessionDurable {
         console.error('failed to persist session after code login', persistError);
       }
 
+      const stored = existingStored || (persistResult?.ok ?? false);
+
       await saveLoginSessionSnapshot(
         this.env,
         {
@@ -913,7 +981,7 @@ export class LoginSessionDurable {
           apiId: state.apiId,
           apiHash: state.apiHash,
           sessionString: state.sessionString,
-          stored: persistResult?.ok ?? false,
+          stored,
           persistedId: persistResult?.id ?? null,
           version: persistResult?.version ?? null
         },
@@ -924,13 +992,18 @@ export class LoginSessionDurable {
       await this.cleanupStorage();
       this.stateData = null;
 
-      return this.json({
+      const response: SignedInResponse = {
         status: 'SIGNED_IN',
-        stored: persistResult?.ok ?? false,
+        stored,
         id: persistResult?.id ?? state.accountId,
         version: persistResult?.version ?? null,
-        preview_user: formatPreviewUser(me)
-      });
+        preview_user: formatPreviewUser(me),
+        session_string: state.sessionString,
+        telegram_api_id: state.apiId,
+        telegram_api_hash: state.apiHash
+      };
+
+      return this.json(response);
     } catch (err: any) {
       if (isPasswordNeededError(err)) {
         await this.ensureClient();
@@ -974,6 +1047,7 @@ export class LoginSessionDurable {
       await state.client.invoke(new Api.auth.CheckPassword({ password: passwordCheck }));
       const me = await state.client.getMe();
       state.sessionString = state.session.save();
+      const existingStored = await sessionRecordExists(this.env, state.accountId);
       let persistResult: PersistResult | null = null;
       try {
         persistResult = await persistSession(
@@ -991,6 +1065,8 @@ export class LoginSessionDurable {
         console.error('failed to persist session after password login', persistError);
       }
 
+      const stored = existingStored || (persistResult?.ok ?? false);
+
       await saveLoginSessionSnapshot(
         this.env,
         {
@@ -1000,7 +1076,7 @@ export class LoginSessionDurable {
           apiId: state.apiId,
           apiHash: state.apiHash,
           sessionString: state.sessionString,
-          stored: persistResult?.ok ?? false,
+          stored,
           persistedId: persistResult?.id ?? null,
           version: persistResult?.version ?? null
         },
@@ -1011,13 +1087,18 @@ export class LoginSessionDurable {
       await this.cleanupStorage();
       this.stateData = null;
 
-      return this.json({
+      const response: SignedInResponse = {
         status: 'SIGNED_IN',
-        stored: persistResult?.ok ?? false,
+        stored,
         id: persistResult?.id ?? state.accountId,
         version: persistResult?.version ?? null,
-        preview_user: formatPreviewUser(me)
-      });
+        preview_user: formatPreviewUser(me),
+        session_string: state.sessionString,
+        telegram_api_id: state.apiId,
+        telegram_api_hash: state.apiHash
+      };
+
+      return this.json(response);
     } catch (err) {
       console.error('durable auth/password error', err);
       await this.disconnectClient();
@@ -1126,15 +1207,19 @@ export class LoginSessionDurable {
 }
 
 async function upsertSessionRecord(env: Env, payload: Record<string, unknown>): Promise<PersistResult> {
-  const idRaw = typeof payload.id === 'string' ? payload.id.trim() : '';
-  if (!idRaw) {
-    throw new ApiError(400, 'id_required');
-  }
-
   const kv = env.SESSIONS_KV;
+  const provisionalId =
+    typeof payload.id === 'string'
+      ? payload.id.trim()
+      : typeof payload.account_id === 'string'
+        ? payload.account_id.trim()
+        : '';
+  const existing = provisionalId
+    ? ((await kv.get(accountKey(provisionalId), { type: 'json' })) as SessionRecord | null)
+    : null;
+  const idRaw = resolveAccountId(payload, existing);
   const key = accountKey(idRaw);
-  const existing = (await kv.get(key, { type: 'json' })) as SessionRecord | null;
-
+  
   let sessionString = existing?.session_string ?? null;
   if (typeof payload.session_string === 'string' && payload.session_string.length > 0) {
     sessionString = payload.session_string;
@@ -1154,6 +1239,7 @@ async function upsertSessionRecord(env: Env, payload: Record<string, unknown>): 
 
   const record: SessionRecord = {
     id: idRaw,
+    account_id: idRaw,
     phone: coalesce(payload.phone as any, existing?.phone, null),
     telegram_api_id: telegramApiId,
     telegram_api_hash: telegramApiHash,

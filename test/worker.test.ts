@@ -109,6 +109,7 @@ describe('session lifecycle endpoints', () => {
     const disableResponse = await app.fetch(disableRequest, env, executionContext());
     expect(disableResponse.status).toBe(200);
     const storedAfterDisable = await env.SESSIONS_KV.get('tgs:acct:acct_1', { type: 'json' }) as any;
+    expect(storedAfterDisable.account_id).toBe('acct_1');
     expect(storedAfterDisable.enabled).toBe(false);
     expect(storedAfterDisable.disabled_reason).toBe('maintenance');
     expect(storedAfterDisable.telegram_api_id).toBe(100);
@@ -162,6 +163,7 @@ describe('session lifecycle endpoints', () => {
     for (const session of json.sessions) {
       expect(session).toHaveProperty('session_string');
       expect(session.session_string.length).toBeGreaterThan(0);
+      expect(session.account_id).toBe(session.id);
       expect(session.telegram_api_id).toBe(100);
       expect(session.telegram_api_hash).toBe('hash');
     }
