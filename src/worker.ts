@@ -457,10 +457,10 @@ export const createApp = () => {
       if ((fnv1a(record.id) % total) !== shard) {
         continue;
       }
-      const resolvedAccountId = record.account_id ?? record.id;
+      const accountId = record.account_id ?? record.id;
       sessions.push({
         id: record.id,
-        account_id: resolvedAccountId,
+        account_id: accountId,
         telegram_api_id: record.telegram_api_id,
         telegram_api_hash: record.telegram_api_hash,
         session_string: record.session_string,
