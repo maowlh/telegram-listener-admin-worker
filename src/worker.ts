@@ -439,25 +439,26 @@ export const createApp = () => {
   });
 
   app.get('/v1/telegram/sessions', async (c) => {
-    const params = c.req.query();
-    const shardParam = params['shard'] ?? '0';
-    const totalParam = params['total'] ?? '1';
-    const enabledParam = params['enabled'];
+    try {
+      const params = c.req.query();
+      const shardParam = params['shard'] ?? '0';
+      const totalParam = params['total'] ?? '1';
+      const enabledParam = params['enabled'];
 
-    if (!isIntegerString(shardParam) || !isIntegerString(totalParam)) {
-      return jsonError(c, 'invalid_shard_parameters', 400);
-    }
+      if (!isIntegerString(shardParam) || !isIntegerString(totalParam)) {
+        return jsonError(c, 'invalid_shard_parameters', 400);
+      }
 
-    const shard = Number(shardParam);
-    const total = Number(totalParam);
+      const shard = Number(shardParam);
+      const total = Number(totalParam);
 
-    if (total <= 0 || shard < 0 || shard >= total) {
-      return jsonError(c, 'invalid_shard_range', 400);
-    }
+      if (total <= 0 || shard < 0 || shard >= total) {
+        return jsonError(c, 'invalid_shard_range', 400);
+      }
 
-    const enabledOnly = enabledParam === undefined ? true : enabledParam !== 'false';
+      const enabledOnly = enabledParam === undefined ? true : enabledParam !== 'false';
 
-    const kv = c.env.SESSIONS_KV;
+      const kv = c.env.SESSIONS_KV;
 
     const ids = await readIndex(kv);
     const sessions: SessionResponse[] = [];
@@ -489,8 +490,13 @@ export const createApp = () => {
       });
     }
 
-    const version = Number((await kv.get(VERSION_KEY)) ?? '0');
-    return c.json({ version, sessions }, 200, JSON_HEADERS);
+      const versionRaw = await kv.get(VERSION_KEY);
+      const version = Number.isFinite(Number(versionRaw)) ? Number(versionRaw) : 0;
+      return c.json({ version, sessions }, 200, JSON_HEADERS);
+    } catch (error) {
+      console.error('failed to list sessions', error);
+      return jsonError(c, 'internal_error', 500);
+    }
   });
 
   app.all('*', (c) => c.newResponse('Not found', 404));
