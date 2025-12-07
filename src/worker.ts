@@ -464,30 +464,41 @@ export const createApp = () => {
     const sessions: SessionResponse[] = [];
 
     for (const accountId of ids) {
-      const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
-      if (!record) continue;
-      if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
-        continue;
+      try {
+        const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
+        
+        // بررسی اینکه رکورد وجود دارد و همچنین دارای id است
+        if (!record || !record.id) continue;
+
+        if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
+          continue;
+        }
+
+        if ((fnv1a(record.id) % total) !== shard) {
+          continue;
+        }
+
+        // تغییر نام متغیر برای جلوگیری از تداخل با accountId در بالای حلقه
+        const finalAccountId = record.account_id ?? record.id;
+
+        sessions.push({
+          id: record.id,
+          account_id: finalAccountId, // استفاده از نام جدید
+          telegram_api_id: record.telegram_api_id,
+          telegram_api_hash: record.telegram_api_hash,
+          session_string: record.session_string,
+          webhook_url: record.webhook_url,
+          allowed_chat_types: record.allowed_chat_types,
+          group_allowlist: record.group_allowlist,
+          enrich_deep: !!record.enrich_deep,
+          enrich_reply: !!record.enrich_reply,
+          heavy_sender_resolve: !!record.heavy_sender_resolve,
+          participants_limit: record.participants_limit ?? DEFAULT_PARTICIPANTS_LIMIT,
+          cache_ttl_ms: record.cache_ttl_ms ?? DEFAULT_CACHE_TTL
+        });
+      } catch (err) {
+        console.error(`Error processing session ${accountId}:`, err);
       }
-      if ((fnv1a(record.id) % total) !== shard) {
-        continue;
-      }
-      const accountId = record.account_id ?? record.id;
-      sessions.push({
-        id: record.id,
-        account_id: accountId,
-        telegram_api_id: record.telegram_api_id,
-        telegram_api_hash: record.telegram_api_hash,
-        session_string: record.session_string,
-        webhook_url: record.webhook_url,
-        allowed_chat_types: record.allowed_chat_types,
-        group_allowlist: record.group_allowlist,
-        enrich_deep: !!record.enrich_deep,
-        enrich_reply: !!record.enrich_reply,
-        heavy_sender_resolve: !!record.heavy_sender_resolve,
-        participants_limit: record.participants_limit ?? DEFAULT_PARTICIPANTS_LIMIT,
-        cache_ttl_ms: record.cache_ttl_ms ?? DEFAULT_CACHE_TTL
-      });
     }
 
       const versionRaw = await kv.get(VERSION_KEY);
