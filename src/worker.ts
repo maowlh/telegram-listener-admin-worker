@@ -460,39 +460,35 @@ export const createApp = () => {
 
       const kv = c.env.SESSIONS_KV;
 
-      const ids = await readIndex(kv);
-      const sessions: SessionResponse[] = [];
+    const ids = await readIndex(kv);
+    const sessions: SessionResponse[] = [];
 
-      for (const accountId of ids) {
-        try {
-          const record = await readSessionRecord(kv, accountId);
-          if (!record) continue;
-          if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
-            continue;
-          }
-          if ((fnv1a(record.id) % total) !== shard) {
-            continue;
-          }
-          const resolvedAccountId = record.account_id ?? record.id;
-          sessions.push({
-            id: record.id,
-            account_id: resolvedAccountId,
-            telegram_api_id: record.telegram_api_id,
-            telegram_api_hash: record.telegram_api_hash,
-            session_string: record.session_string,
-            webhook_url: record.webhook_url,
-            allowed_chat_types: record.allowed_chat_types,
-            group_allowlist: record.group_allowlist,
-            enrich_deep: !!record.enrich_deep,
-            enrich_reply: !!record.enrich_reply,
-            heavy_sender_resolve: !!record.heavy_sender_resolve,
-            participants_limit: record.participants_limit ?? DEFAULT_PARTICIPANTS_LIMIT,
-            cache_ttl_ms: record.cache_ttl_ms ?? DEFAULT_CACHE_TTL
-          });
-        } catch (err) {
-          console.warn('failed to read session record', accountId, err);
-        }
+    for (const accountId of ids) {
+      const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
+      if (!record) continue;
+      if (enabledOnly && (!record.enabled || record.webhook_enabled === false)) {
+        continue;
       }
+      if ((fnv1a(record.id) % total) !== shard) {
+        continue;
+      }
+      const accountId = record.account_id ?? record.id;
+      sessions.push({
+        id: record.id,
+        account_id: accountId,
+        telegram_api_id: record.telegram_api_id,
+        telegram_api_hash: record.telegram_api_hash,
+        session_string: record.session_string,
+        webhook_url: record.webhook_url,
+        allowed_chat_types: record.allowed_chat_types,
+        group_allowlist: record.group_allowlist,
+        enrich_deep: !!record.enrich_deep,
+        enrich_reply: !!record.enrich_reply,
+        heavy_sender_resolve: !!record.heavy_sender_resolve,
+        participants_limit: record.participants_limit ?? DEFAULT_PARTICIPANTS_LIMIT,
+        cache_ttl_ms: record.cache_ttl_ms ?? DEFAULT_CACHE_TTL
+      });
+    }
 
       const versionRaw = await kv.get(VERSION_KEY);
       const version = Number.isFinite(Number(versionRaw)) ? Number(versionRaw) : 0;
@@ -704,30 +700,6 @@ async function readIndex(kv: KVNamespace): Promise<string[]> {
     // fall through to empty
   }
   return [];
-}
-
-async function readSessionRecord(kv: KVNamespace, accountId: string): Promise<SessionRecord | null> {
-  const key = accountKey(accountId);
-  try {
-    const raw = await kv.get(key);
-    if (!raw) return null;
-    if (typeof raw === 'string') {
-      try {
-        return JSON.parse(raw) as SessionRecord;
-      } catch (err) {
-        console.warn('failed to parse session record', accountId, err);
-        return null;
-      }
-    }
-    // If KV returns an already-parsed object
-    if (typeof raw === 'object' && raw !== null) {
-      return raw as SessionRecord;
-    }
-  } catch (err) {
-    console.warn('failed to load session record', accountId, err);
-    return null;
-  }
-  return null;
 }
 
 async function updateIndex(kv: KVNamespace, id: string, add: boolean) {
@@ -1288,12 +1260,7 @@ async function upsertSessionRecord(env: Env, payload: Record<string, unknown>): 
   const record: SessionRecord = {
     id: idRaw,
     account_id: idRaw,
-    phone:
-      typeof payload.phone === 'string'
-        ? payload.phone
-        : typeof existing?.phone === 'string'
-          ? existing.phone
-          : null,
+    phone: coalesce(payload.phone as any, existing?.phone, null),
     telegram_api_id: telegramApiId,
     telegram_api_hash: telegramApiHash,
     session_string: sessionString,

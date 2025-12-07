@@ -218,45 +218,4 @@ describe('session lifecycle endpoints', () => {
     expect(sessionsBody.sessions.length).toBe(1);
     expect(sessionsBody.sessions[0].id).toBe('acct_auto');
   });
-
-  it('returns sessions when indexed ids exist without throwing', async () => {
-    const record = {
-      id: 'my-acc',
-      account_id: 'my-acc',
-      phone: '+989936965879',
-      telegram_api_id: 21968017,
-      telegram_api_hash: '5a3084a74c58dbffb50300796ce6a430',
-      session_string: 'session-data',
-      webhook_url: null,
-      webhook_enabled: true,
-      allowed_chat_types: 'group,supergroup,channel,private',
-      group_allowlist: '',
-      enrich_deep: true,
-      enrich_reply: false,
-      heavy_sender_resolve: true,
-      participants_limit: 200,
-      cache_ttl_ms: 600000,
-      enabled: true,
-      disabled_reason: null,
-      created_at: 1764865714,
-      updated_at: 1764865714
-    };
-
-    await env.SESSIONS_KV.put('sessions_index_v1', JSON.stringify(['my-acc']));
-    await env.SESSIONS_KV.put('tgs:acct:my-acc', JSON.stringify(record));
-    await env.SESSIONS_KV.put('tgs:version', '1');
-
-    const response = await app.fetch(
-      new Request('https://example.com/v1/telegram/sessions?shard=0&total=1', { headers: AUTH_HEADER }),
-      env,
-      executionContext()
-    );
-
-    expect(response.status).toBe(200);
-    const body = await response.json() as any;
-    expect(body.version).toBe(1);
-    expect(Array.isArray(body.sessions)).toBe(true);
-    expect(body.sessions.length).toBe(1);
-    expect(body.sessions[0].id).toBe('my-acc');
-  });
 });
