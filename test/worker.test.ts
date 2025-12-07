@@ -109,6 +109,7 @@ describe('session lifecycle endpoints', () => {
     const disableResponse = await app.fetch(disableRequest, env, executionContext());
     expect(disableResponse.status).toBe(200);
     const storedAfterDisable = await env.SESSIONS_KV.get('tgs:acct:acct_1', { type: 'json' }) as any;
+    expect(storedAfterDisable.account_id).toBe('acct_1');
     expect(storedAfterDisable.enabled).toBe(false);
     expect(storedAfterDisable.disabled_reason).toBe('maintenance');
     expect(storedAfterDisable.telegram_api_id).toBe(100);
@@ -162,8 +163,143 @@ describe('session lifecycle endpoints', () => {
     for (const session of json.sessions) {
       expect(session).toHaveProperty('session_string');
       expect(session.session_string.length).toBeGreaterThan(0);
+      expect(session.account_id).toBe(session.id);
       expect(session.telegram_api_id).toBe(100);
       expect(session.telegram_api_hash).toBe('hash');
     }
+  });
+
+  it('persists a session automatically on signed-in responses', async () => {
+    const signedInResponse = {
+      status: 'SIGNED_IN',
+      stored: false,
+      id: 'acct_auto',
+      version: null,
+      preview_user: null,
+      session_string: 'session-data',
+      telegram_api_id: 100,
+      telegram_api_hash: 'hash'
+    };
+
+    env.LOGIN_SESSIONS = {
+      idFromName: () => ({}),
+      get: () => ({
+        fetch: async () =>
+          new Response(JSON.stringify(signedInResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          })
+      })
+    } as unknown as DurableObjectNamespace;
+
+    const codeRequest = new Request('https://example.com/v1/auth/code', {
+      method: 'POST',
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ login_id: 'lg_1', code: '00000' })
+    });
+
+    const codeResponse = await app.fetch(codeRequest, env, executionContext());
+    expect(codeResponse.status).toBe(200);
+    const body = (await codeResponse.json()) as any;
+    expect(body.status).toBe('SIGNED_IN');
+    expect(body.stored).toBe(true);
+    expect(body.version).toBe(1);
+
+    const sessionsResponse = await app.fetch(
+      new Request('https://example.com/v1/telegram/sessions?shard=0&total=1', {
+        headers: AUTH_HEADER
+      }),
+      env,
+      executionContext()
+    );
+    expect(sessionsResponse.status).toBe(200);
+    const sessionsBody = (await sessionsResponse.json()) as any;
+    expect(Array.isArray(sessionsBody.sessions)).toBe(true);
+    expect(sessionsBody.sessions.length).toBe(1);
+    expect(sessionsBody.sessions[0].id).toBe('acct_auto');
+  });
+
+  it('returns sessions when indexed ids exist without throwing', async () => {
+    const record = {
+      id: 'my-acc',
+      account_id: 'my-acc',
+      phone: '+989936965879',
+      telegram_api_id: 21968017,
+      telegram_api_hash: '5a3084a74c58dbffb50300796ce6a430',
+      session_string: 'session-data',
+      webhook_url: null,
+      webhook_enabled: true,
+      allowed_chat_types: 'group,supergroup,channel,private',
+      group_allowlist: '',
+      enrich_deep: true,
+      enrich_reply: false,
+      heavy_sender_resolve: true,
+      participants_limit: 200,
+      cache_ttl_ms: 600000,
+      enabled: true,
+      disabled_reason: null,
+      created_at: 1764865714,
+      updated_at: 1764865714
+    };
+
+    await env.SESSIONS_KV.put('sessions_index_v1', JSON.stringify(['my-acc']));
+    await env.SESSIONS_KV.put('tgs:acct:my-acc', JSON.stringify(record));
+    await env.SESSIONS_KV.put('tgs:version', '1');
+
+    const response = await app.fetch(
+      new Request('https://example.com/v1/telegram/sessions?shard=0&total=1', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as any;
+    expect(body.version).toBe(1);
+    expect(Array.isArray(body.sessions)).toBe(true);
+    expect(body.sessions.length).toBe(1);
+    expect(body.sessions[0].id).toBe('my-acc');
+  });
+
+  it('returns a valid JSON payload even when populated with real session data', async () => {
+    const record = {
+      id: 'my-acc',
+      account_id: 'my-acc',
+      phone: '+989936965879',
+      telegram_api_id: 21968017,
+      telegram_api_hash: '5a3084a74c58dbffb50300796ce6a430',
+      session_string:
+        '1BAAOMTQ5LjE1NC4xNjcuOTEBux5ahaKCOdAZNWSLWMZjhZu+WXdPsdKdn21s0n8i5Ihh+Iz0kKwSMNBzKJYK0Mdvvz08zJdJSXK6jKBQR81FmjkjWbrPMtFi4jqwIKIDdhcowQ8XtTd1xCoY+I/fL+kNcMqLEPEzwODnfyVg6OItpzG3iHScGzga0RuY7WVgFozYVunPs+2dbophj8KXQ2RKBPS7pgc5ZIFk0YQI3amye+hF9UwRggNOYTvah7cT+DH4nU/9rE1QQbmWUsV0ObBh4beActxFkgvmwzl9/VbDQwwmEXDS37MZZ5KUMWNZ1yfBF+Y7wF+kD5U//y+UZ10gJzRz+3+bUHKUB5lb5QJjhM0=',
+      webhook_url: null,
+      webhook_enabled: true,
+      allowed_chat_types: 'group,supergroup,channel,private',
+      group_allowlist: '',
+      enrich_deep: true,
+      enrich_reply: false,
+      heavy_sender_resolve: true,
+      participants_limit: 200,
+      cache_ttl_ms: 600000,
+      enabled: true,
+      disabled_reason: null,
+      created_at: 1764865714,
+      updated_at: 1764865714
+    };
+
+    await env.SESSIONS_KV.put('sessions_index_v1', JSON.stringify(['my-acc']));
+    await env.SESSIONS_KV.put('tgs:acct:my-acc', JSON.stringify(record));
+    await env.SESSIONS_KV.put('tgs:version', '1');
+
+    const response = await app.fetch(
+      new Request('https://example.com/v1/telegram/sessions?shard=0&total=1', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/json');
+    const body = await response.json() as any;
+    expect(body.version).toBe(1);
+    expect(Array.isArray(body.sessions)).toBe(true);
+    expect(body.sessions.length).toBe(1);
+    expect(body.sessions[0].id).toBe('my-acc');
   });
 });
