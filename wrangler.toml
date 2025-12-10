@@ -24,5 +24,7 @@ class_name = "LoginSessionDurable"
 tag = "v1"                  # any unique, never-reused tag
 new_classes = ["LoginSessionDurable"]
 
-
+[observability]
+enabled = true
+head_sampling_rate = 1
 # Replace the placeholder values above with the real credentials before deploying.
