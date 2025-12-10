@@ -182,6 +182,24 @@ const SESSION_DEFAULT_KEYS: Array<keyof SessionDefaults> = [
 export const createApp = () => {
   const app = new Hono<{ Bindings: Env }>();
 
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS,DELETE',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+  } as const;
+
+  app.use('*', async (c, next) => {
+    if (c.req.method === 'OPTIONS') {
+      return c.newResponse(null, 204, corsHeaders);
+    }
+
+    await next();
+
+    for (const [key, value] of Object.entries(corsHeaders)) {
+      c.res.headers.set(key, value);
+    }
+  });
+
   app.use('*', async (c, next) => {
     const authHeader = c.req.header('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
@@ -406,6 +424,13 @@ export const createApp = () => {
         case 'telegram_api_id':
           if (typeof value !== 'number') {
             return jsonError(c, `${field}_number_required`, 400);
+          }
+          (record as any)[field] = value;
+          break;
+        case 'allowed_chat_types':
+        case 'group_allowlist':
+          if (typeof value !== 'string') {
+            return jsonError(c, `${field}_string_required`, 400);
           }
           (record as any)[field] = value;
           break;
