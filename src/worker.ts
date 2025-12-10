@@ -139,6 +139,9 @@ export interface SessionResponse {
   telegram_api_id: number;
   telegram_api_hash: string | null;
   session_string: string;
+  enabled: boolean;
+  webhook_enabled: boolean;
+  disabled_reason: string | null;
   webhook_url: string | null;
   allowed_chat_types: string;
   group_allowlist: string;
@@ -512,6 +515,9 @@ export const createApp = () => {
           telegram_api_id: record.telegram_api_id,
           telegram_api_hash: record.telegram_api_hash,
           session_string: record.session_string,
+          enabled: !!record.enabled,
+          webhook_enabled: !!record.webhook_enabled,
+          disabled_reason: record.disabled_reason ?? null,
           webhook_url: record.webhook_url,
           allowed_chat_types: record.allowed_chat_types,
           group_allowlist: record.group_allowlist,
