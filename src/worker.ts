@@ -52,6 +52,7 @@ const LOGIN_SESSION_PREFIX = 'tgs:login:';
 const INDEX_KEY = 'sessions_index_v1';
 const VERSION_KEY = 'tgs:version';
 const LOGIN_STATE_KEY = 'login_state';
+const RULES_PREFIX = 'auto_reply:rules:';
 const DEFAULT_ALLOWED_CHAT_TYPES = 'group,supergroup,channel,private';
 const DEFAULT_CACHE_TTL = 600_000;
 const DEFAULT_PARTICIPANTS_LIMIT = 200;
@@ -136,6 +137,7 @@ export interface SessionRecord {
 export interface SessionResponse {
   id: string;
   account_id: string;
+  canonical_account_id: string;
   telegram_api_id: number;
   telegram_api_hash: string | null;
   session_string: string;
@@ -150,6 +152,23 @@ export interface SessionResponse {
   heavy_sender_resolve: boolean;
   participants_limit: number;
   cache_ttl_ms: number;
+}
+
+type RuleArrayField = Array<string | number>;
+
+interface AutoReplyRule {
+  chat_ids?: RuleArrayField;
+  chat_usernames?: RuleArrayField;
+  senders?: RuleArrayField;
+  keywords?: RuleArrayField;
+  kinds?: RuleArrayField;
+  languages?: RuleArrayField;
+  [key: string]: unknown;
+}
+
+interface RulesEnvelope {
+  rules: AutoReplyRule[];
+  wildcard_note?: string;
 }
 
 const METADATA_FIELDS: Array<keyof SessionRecord> = [
@@ -506,12 +525,19 @@ export const createApp = () => {
           continue;
         }
 
-        // تغییر نام متغیر برای جلوگیری از تداخل با accountId در بالای حلقه
         const finalAccountId = record.account_id ?? record.id;
+        const canonicalId = record.id ?? finalAccountId;
+        if (finalAccountId !== canonicalId) {
+          console.warn('account_id/id mismatch detected; using canonical id', {
+            recordAccountId: finalAccountId,
+            recordId: canonicalId
+          });
+        }
 
         sessions.push({
-          id: record.id,
-          account_id: finalAccountId, // استفاده از نام جدید
+          id: canonicalId,
+          account_id: canonicalId,
+          canonical_account_id: canonicalId,
           telegram_api_id: record.telegram_api_id,
           telegram_api_hash: record.telegram_api_hash,
           session_string: record.session_string,
@@ -539,6 +565,128 @@ export const createApp = () => {
       console.error('failed to list sessions', error);
       return jsonError(c, 'internal_error', 500);
     }
+  });
+
+  app.get('/v1/telegram/rules/:id', async (c) => {
+    const id = c.req.param('id');
+    const kv = c.env.SESSIONS_KV;
+    const session = (await kv.get(accountKey(id), { type: 'json' })) as SessionRecord | null;
+    if (!session) {
+      return jsonError(c, 'not_found', 404);
+    }
+
+    const rulesRaw = await kv.get(rulesKey(id));
+    let parsed: RulesEnvelope | null = null;
+    if (rulesRaw) {
+      try {
+        parsed = JSON.parse(rulesRaw) as RulesEnvelope;
+      } catch (err) {
+        console.warn('failed to parse rules', { id, err });
+      }
+    }
+
+    const envelope: RulesEnvelope = {
+      rules: parsed?.rules ?? [],
+      wildcard_note: 'Empty arrays are treated as wildcards'
+    };
+
+    return c.json(
+      {
+        id,
+        canonical_account_id: session.id ?? id,
+        rules: envelope.rules,
+        wildcard_note: envelope.wildcard_note
+      },
+      200,
+      JSON_HEADERS
+    );
+  });
+
+  app.put('/v1/telegram/rules/:id', async (c) => {
+    const id = c.req.param('id');
+    const kv = c.env.SESSIONS_KV;
+    const session = (await kv.get(accountKey(id), { type: 'json' })) as SessionRecord | null;
+    if (!session) {
+      return jsonError(c, 'not_found', 404);
+    }
+
+    const body = await parseJsonBody(c);
+    try {
+      const rules = normalizeRulesPayload(body);
+      const envelope: RulesEnvelope = {
+        rules,
+        wildcard_note: 'Empty arrays are treated as wildcards'
+      };
+      await kv.put(rulesKey(id), JSON.stringify(envelope));
+      return c.json({ ok: true, id, canonical_account_id: session.id ?? id, rules }, 200, JSON_HEADERS);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return jsonError(c, error.code, error.status);
+      }
+      console.error('failed to persist rules', { id, error });
+      return jsonError(c, 'invalid_rules', 400);
+    }
+  });
+
+  app.delete('/v1/telegram/rules/:id', async (c) => {
+    const id = c.req.param('id');
+    const kv = c.env.SESSIONS_KV;
+    await kv.delete(rulesKey(id));
+    return c.json({ ok: true, id }, 200, JSON_HEADERS);
+  });
+
+  app.get('/v1/debug/mapping', async (c) => {
+    const kv = c.env.SESSIONS_KV;
+    const ids = await readIndex(kv);
+    const accounts = [] as Array<{ id: string; phone: string | null; telegram_self_id: string | number | null; rules_key: string; rules_present: boolean }>;
+
+    for (const accountId of ids) {
+      try {
+        const record = (await kv.get(accountKey(accountId), { type: 'json' })) as SessionRecord | null;
+        if (!record) continue;
+        const canonicalId = record.id ?? record.account_id ?? accountId;
+        const key = rulesKey(canonicalId);
+        const rulesPresent = Boolean(await kv.get(key));
+        accounts.push({
+          id: canonicalId,
+          phone: record.phone ?? null,
+          telegram_self_id: (record as any).telegram_self_id ?? null,
+          rules_key: key,
+          rules_present: rulesPresent
+        });
+      } catch (error) {
+        console.warn('failed to build mapping entry', { accountId, error });
+      }
+    }
+
+    const listedRules = await kv.list({ prefix: RULES_PREFIX });
+    const orphan_rule_keys = listedRules.keys
+      .map((entry) => entry.name)
+      .filter((name) => !accounts.some((acct) => acct.rules_key === name));
+
+    return c.json({ accounts, orphan_rule_keys }, 200, JSON_HEADERS);
+  });
+
+  app.post('/v1/admin/migrate-rules', async (c) => {
+    const body = await parseJsonBody(c);
+    const selfId = typeof body.self_id === 'string' ? body.self_id.trim() : '';
+    const internalId = typeof body.internal_id === 'string' ? body.internal_id.trim() : '';
+
+    if (!selfId || !internalId) {
+      return jsonError(c, 'self_id_and_internal_id_required', 400);
+    }
+
+    const kv = c.env.SESSIONS_KV;
+    const sourceKey = rulesKey(selfId);
+    const destKey = rulesKey(internalId);
+    const payload = await kv.get(sourceKey);
+    if (!payload) {
+      return c.json({ migrated: false, reason: 'source_not_found', source: sourceKey, destination: destKey }, 200, JSON_HEADERS);
+    }
+
+    await kv.put(destKey, payload);
+    console.log('migrated rules key', { from: sourceKey, to: destKey });
+    return c.json({ migrated: true, source: sourceKey, destination: destKey }, 200, JSON_HEADERS);
   });
 
   app.all('*', (c) => c.newResponse('Not found', 404));
@@ -604,8 +752,59 @@ function loginSessionKey(id: string): string {
   return `${LOGIN_SESSION_PREFIX}${id}`;
 }
 
+function rulesKey(id: string): string {
+  return `${RULES_PREFIX}${id}`;
+}
+
 function currentTimestamp(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function normalizeRuleArray(value: unknown, field: string): RuleArrayField {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, `${field}_array_required`);
+  }
+  return value.filter((entry) => entry !== undefined && entry !== null) as RuleArrayField;
+}
+
+function normalizeRule(rule: unknown): AutoReplyRule {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+    throw new ApiError(400, 'rule_object_required');
+  }
+
+  const normalized: AutoReplyRule = {};
+  const obj = rule as Record<string, unknown>;
+  const arrayFields = ['chat_ids', 'chat_usernames', 'senders', 'keywords', 'kinds', 'languages'];
+
+  for (const [key, value] of Object.entries(obj)) {
+    if (arrayFields.includes(key)) {
+      normalized[key] = normalizeRuleArray(value, key);
+    } else {
+      normalized[key] = value as any;
+    }
+  }
+
+  for (const missingField of arrayFields) {
+    if (!(missingField in normalized)) {
+      normalized[missingField] = [];
+    }
+  }
+
+  return normalized;
+}
+
+function normalizeRulesPayload(body: any): AutoReplyRule[] {
+  if (!body || typeof body !== 'object') {
+    throw new ApiError(400, 'invalid_rules_payload');
+  }
+  if (!Array.isArray((body as any).rules)) {
+    throw new ApiError(400, 'rules_array_required');
+  }
+  const rules = (body as any).rules as unknown[];
+  return rules.map((rule) => normalizeRule(rule));
 }
 
 async function parseJsonBody(c: Context): Promise<any> {
@@ -679,8 +878,8 @@ function resolveTelegramApiHash(value: unknown, existing: string | null | undefi
 
 function coalesce<T>(...values: Array<T | null | undefined>): T {
   for (const value of values) {
-    if (value !== undefined && value !== null) {
-      return value;
+    if (value !== undefined) {
+      return value as T;
     }
   }
   throw new Error('Unable to coalesce value');

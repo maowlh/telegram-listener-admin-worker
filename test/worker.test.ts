@@ -164,9 +164,70 @@ describe('session lifecycle endpoints', () => {
       expect(session).toHaveProperty('session_string');
       expect(session.session_string.length).toBeGreaterThan(0);
       expect(session.account_id).toBe(session.id);
+      expect(session.canonical_account_id).toBe(session.id);
       expect(session.telegram_api_id).toBe(100);
       expect(session.telegram_api_hash).toBe('hash');
     }
+  });
+
+  it('stores and retrieves rules under canonical account ids', async () => {
+    const baseBody = {
+      id: 'acct_rules',
+      phone: '+1000000000',
+      session_string: 'plaintext-session',
+      webhook_url: 'https://example.com/hook',
+      webhook_enabled: true,
+      enabled: true
+    };
+
+    const createRequest = new Request('https://example.com/v1/telegram/sessions', {
+      method: 'POST',
+      headers: AUTH_HEADER,
+      body: JSON.stringify(baseBody)
+    });
+    const createResponse = await app.fetch(createRequest, env, executionContext());
+    expect(createResponse.status).toBe(200);
+
+    const putRules = new Request('https://example.com/v1/telegram/rules/acct_rules', {
+      method: 'PUT',
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ rules: [{ chat_ids: [], chat_usernames: ['foo'] }] })
+    });
+
+    const putResponse = await app.fetch(putRules, env, executionContext());
+    expect(putResponse.status).toBe(200);
+    const storedRules = await env.SESSIONS_KV.get('auto_reply:rules:acct_rules', { type: 'json' }) as any;
+    expect(storedRules.rules[0].chat_ids).toEqual([]);
+    expect(storedRules.rules[0].chat_usernames).toEqual(['foo']);
+
+    const getRules = await app.fetch(
+      new Request('https://example.com/v1/telegram/rules/acct_rules', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+    expect(getRules.status).toBe(200);
+    const rulesJson = await getRules.json() as any;
+    expect(rulesJson.id).toBe('acct_rules');
+    expect(rulesJson.canonical_account_id).toBe('acct_rules');
+    expect(rulesJson.rules[0].chat_ids).toEqual([]);
+    expect(rulesJson.wildcard_note).toBeDefined();
+  });
+
+  it('migrates legacy self-id rule keys to canonical ids', async () => {
+    await env.SESSIONS_KV.put('auto_reply:rules:old_self', JSON.stringify({ rules: [{ keywords: ['hi'] }] }));
+
+    const migrateRequest = new Request('https://example.com/v1/admin/migrate-rules', {
+      method: 'POST',
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ self_id: 'old_self', internal_id: 'acct_rules' })
+    });
+
+    const migrateResponse = await app.fetch(migrateRequest, env, executionContext());
+    expect(migrateResponse.status).toBe(200);
+    const migrateJson = await migrateResponse.json() as any;
+    expect(migrateJson.migrated).toBe(true);
+    const copied = await env.SESSIONS_KV.get('auto_reply:rules:acct_rules', { type: 'json' }) as any;
+    expect(copied.rules[0].keywords).toEqual(['hi']);
   });
 
   it('persists a session automatically on signed-in responses', async () => {
