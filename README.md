@@ -11,6 +11,12 @@ This repository exposes a single Cloudflare Worker that handles both administrat
 - Ready-to-use Wrangler configuration and automated tests.
 - Built-in GramJS-powered interactive login flow with ephemeral in-memory state (10 minute TTL by default) and automatic persistence to KV.
 
+## Router/Listener responsibilities
+
+- The Router no longer connects directly to Telegram; it focuses on admin APIs and receiving webhooks.
+- Outgoing Telegram messages must be forwarded to the Listener's internal endpoint (`POST /internal/tg/send`) using the configured `LISTENER_SEND_URL` instead of any direct Telegram credentials.
+- Per-account `webhook_url` values should still target the Router's ingest handler (for example, `/tg/ingest`) so updates are persisted for listeners.
+
 ## Getting started
 
 ### Prerequisites
@@ -33,6 +39,7 @@ Set the following bindings in the Cloudflare dashboard or using `wrangler secret
 - `SESSIONS_API_TOKEN` – static bearer token used by all admin/listener calls.
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` – default Telegram credentials returned to listener workers.
 - `LOGIN_TTL_MS` – optional TTL override (in milliseconds) for interactive logins (defaults to 600000).
+- `LISTENER_SEND_URL` – internal URL for posting outgoing messages to the listener (`/internal/tg/send`), used by the Router instead of connecting directly to Telegram.
 
 Bind your KV namespace as `SESSIONS_KV` in `wrangler.toml` (replace the placeholder `id`).
 
@@ -58,6 +65,8 @@ npx wrangler deploy
 ### Worker API reference
 
 All requests must include `Authorization: Bearer <SESSIONS_API_TOKEN>`.
+
+Account payloads returned by the admin APIs use `id` as the canonical internal account identifier (also returned as `canonical_account_id`) to avoid legacy `account_id` mismatches.
 
 #### Upsert session
 
