@@ -4,6 +4,14 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { Api, TelegramClient } from 'telegram';
 import { computeCheck } from 'telegram/Password';
 import { StringSession } from 'telegram/sessions';
+import { ApiError } from './errors';
+import {
+  HumanizeConfig,
+  NormalizedHumanizeConfig,
+  RECOMMENDED_HUMANIZE_DEFAULTS,
+  RouteConfig,
+  normalizeHumanizeConfig
+} from './config';
 
 type LoginStatus = 'CODE_SENT' | 'PASSWORD_REQUIRED' | 'SIGNED_IN' | 'ERROR';
 
@@ -53,6 +61,7 @@ const INDEX_KEY = 'sessions_index_v1';
 const VERSION_KEY = 'tgs:version';
 const LOGIN_STATE_KEY = 'login_state';
 const RULES_PREFIX = 'auto_reply:rules:';
+const ROUTES_KEY = 'routes_config_v1';
 const DEFAULT_ALLOWED_CHAT_TYPES = 'group,supergroup,channel,private';
 const DEFAULT_CACHE_TTL = 600_000;
 const DEFAULT_PARTICIPANTS_LIMIT = 200;
@@ -95,12 +104,6 @@ interface LoginSessionSnapshot {
   stored: boolean;
   persistedId: string | null;
   version: number | null;
-}
-
-class ApiError extends Error {
-  constructor(public status: number, public code: string) {
-    super(code);
-  }
 }
 
 export interface Env {
@@ -169,6 +172,11 @@ interface AutoReplyRule {
 interface RulesEnvelope {
   rules: AutoReplyRule[];
   wildcard_note?: string;
+}
+
+interface RoutesEnvelope {
+  routes: Record<string, RouteConfig>;
+  [key: string]: unknown;
 }
 
 const METADATA_FIELDS: Array<keyof SessionRecord> = [
@@ -635,6 +643,77 @@ export const createApp = () => {
     return c.json({ ok: true, id }, 200, JSON_HEADERS);
   });
 
+  app.get('/v1/routes', async (c) => {
+    const kv = c.env.SESSIONS_KV;
+    const envelope = await readRoutesEnvelope(kv);
+    const normalizedRoutes = normalizeRoutesForResponse(envelope.routes);
+    const versionRaw = await kv.get(VERSION_KEY);
+    const version = Number.isFinite(Number(versionRaw)) ? Number(versionRaw) : 0;
+    return c.json({ ...envelope, routes: normalizedRoutes, version }, 200, JSON_HEADERS);
+  });
+
+  app.get('/v1/routes/humanize-defaults', (c) => {
+    return c.json({ defaults: RECOMMENDED_HUMANIZE_DEFAULTS }, 200, JSON_HEADERS);
+  });
+
+  app.put('/v1/routes', async (c) => {
+    const body = await parseJsonBody(c);
+    if (!isPlainObject(body)) {
+      return jsonError(c, 'routes_object_required', 400);
+    }
+    if (!isPlainObject((body as any).routes)) {
+      return jsonError(c, 'routes_map_required', 400);
+    }
+
+    const routesBody = (body as any).routes as Record<string, RouteConfig>;
+    try {
+      const normalizedRoutes = normalizeRoutesForStorage(routesBody);
+      const envelope: RoutesEnvelope = { ...body, routes: normalizedRoutes };
+      await c.env.SESSIONS_KV.put(ROUTES_KEY, JSON.stringify(envelope));
+      const version = await bumpVersion(c.env);
+      return c.json({ ok: true, routes: normalizedRoutes, version }, 200, JSON_HEADERS);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return jsonError(c, error.code, error.status);
+      }
+      console.error('failed to store routes', error);
+      return jsonError(c, 'invalid_routes', 400);
+    }
+  });
+
+  app.patch('/v1/routes/:key', async (c) => {
+    const routeKey = c.req.param('key');
+    const kv = c.env.SESSIONS_KV;
+    const envelope = await readRoutesEnvelope(kv);
+    const body = await parseJsonBody(c);
+    if (!isPlainObject(body)) {
+      return jsonError(c, 'route_object_required', 400);
+    }
+
+    try {
+      const existingRoute = ensureRouteObject(envelope.routes[routeKey]);
+      const incomingRoute = validateRoute(body, routeKey);
+      const merged: RouteConfig = { ...existingRoute, ...incomingRoute };
+      if (incomingRoute.humanize !== undefined || !existingRoute.humanize) {
+        merged.humanize = incomingRoute.humanize ?? existingRoute.humanize;
+      }
+      const normalized = normalizeRouteConfigForStorage(merged);
+      const updatedEnvelope: RoutesEnvelope = {
+        ...envelope,
+        routes: { ...envelope.routes, [routeKey]: normalized }
+      };
+      await kv.put(ROUTES_KEY, JSON.stringify(updatedEnvelope));
+      const version = await bumpVersion(c.env);
+      return c.json({ ok: true, key: routeKey, route: normalized, version }, 200, JSON_HEADERS);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return jsonError(c, error.code, error.status);
+      }
+      console.error('failed to patch route', { routeKey, error });
+      return jsonError(c, 'invalid_route', 400);
+    }
+  });
+
   app.get('/v1/debug/mapping', async (c) => {
     const kv = c.env.SESSIONS_KV;
     const ids = await readIndex(kv);
@@ -807,6 +886,57 @@ function normalizeRulesPayload(body: any): AutoReplyRule[] {
   return rules.map((rule) => normalizeRule(rule));
 }
 
+async function readRoutesEnvelope(kv: KVNamespace): Promise<RoutesEnvelope> {
+  const raw = (await kv.get(ROUTES_KEY, { type: 'json' })) as RoutesEnvelope | null;
+  if (raw && isPlainObject(raw)) {
+    const routes = isPlainObject((raw as any).routes) ? ((raw as any).routes as Record<string, RouteConfig>) : {};
+    const { routes: _routes, ...rest } = raw as any;
+    return { ...rest, routes };
+  }
+  return { routes: {} };
+}
+
+function normalizeRoutesForResponse(
+  routes: Record<string, RouteConfig> | undefined
+): Record<string, RouteConfig & { humanize: NormalizedHumanizeConfig }> {
+  const normalized: Record<string, RouteConfig & { humanize: NormalizedHumanizeConfig }> = {};
+  if (!routes || typeof routes !== 'object') {
+    return normalized;
+  }
+  for (const [key, value] of Object.entries(routes)) {
+    const route = ensureRouteObject(value);
+    normalized[key] = normalizeRouteConfigForStorage(route);
+  }
+  return normalized;
+}
+
+function normalizeRoutesForStorage(
+  routes: Record<string, RouteConfig>
+): Record<string, RouteConfig & { humanize: NormalizedHumanizeConfig }> {
+  const normalized: Record<string, RouteConfig & { humanize: NormalizedHumanizeConfig }> = {};
+  for (const [key, value] of Object.entries(routes)) {
+    const validated = validateRoute(value, key);
+    normalized[key] = normalizeRouteConfigForStorage(validated);
+  }
+  return normalized;
+}
+
+function normalizeRouteConfigForStorage(route: RouteConfig): RouteConfig & { humanize: NormalizedHumanizeConfig } {
+  const { humanize, ...rest } = ensureRouteObject(route);
+  return { ...rest, humanize: normalizeHumanizeConfig(humanize as HumanizeConfig | undefined) };
+}
+
+function validateRoute(route: unknown, routeKey: string): RouteConfig {
+  if (!isPlainObject(route)) {
+    throw new ApiError(400, `route.${routeKey}_object_required`);
+  }
+  return route as RouteConfig;
+}
+
+function ensureRouteObject(value: unknown): RouteConfig {
+  return isPlainObject(value) ? (value as RouteConfig) : {};
+}
+
 async function parseJsonBody(c: Context): Promise<any> {
   try {
     if (!c.req.header('content-type')?.includes('application/json')) {
@@ -909,6 +1039,10 @@ function resolveDisabledReason(payload: any, existing: SessionRecord | null): st
 
 function isIntegerString(value: string): boolean {
   return /^\d+$/.test(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function fnv1a(input: string): number {
