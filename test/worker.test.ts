@@ -292,7 +292,12 @@ describe('session lifecycle endpoints', () => {
       keywords: [' Test ', 'test', ''],
       variation_openers: [' hi ', ''],
       emoji_probability: 1.5,
-      max_emojis: 10
+      max_emojis: 10,
+      allow_reply_to_self_without_keywords: false,
+      queue_on_cooldown: false,
+      queue_on_rate_limit: false,
+      queue_on_probability: true,
+      queue_on_filter: true
     });
 
     expect(normalized.reply_probability).toBe(1);
@@ -305,6 +310,11 @@ describe('session lifecycle endpoints', () => {
     expect(normalized.variation_openers).toEqual(['hi']);
     expect(normalized.emoji_probability).toBe(1);
     expect(normalized.max_emojis).toBe(2);
+    expect(normalized.allow_reply_to_self_without_keywords).toBe(false);
+    expect(normalized.queue_on_cooldown).toBe(false);
+    expect(normalized.queue_on_rate_limit).toBe(false);
+    expect(normalized.queue_on_probability).toBe(true);
+    expect(normalized.queue_on_filter).toBe(true);
   });
 
   it('returns humanize defaults when routes lack the field', async () => {
@@ -319,6 +329,11 @@ describe('session lifecycle endpoints', () => {
     const body = (await response.json()) as any;
     expect(body.routes.BUY.humanize.enabled).toBe(true);
     expect(body.routes.BUY.humanize.max_emojis).toBe(1);
+    expect(body.routes.BUY.humanize.allow_reply_to_self_without_keywords).toBe(true);
+    expect(body.routes.BUY.humanize.queue_on_cooldown).toBe(true);
+    expect(body.routes.BUY.humanize.queue_on_rate_limit).toBe(true);
+    expect(body.routes.BUY.humanize.queue_on_probability).toBe(false);
+    expect(body.routes.BUY.humanize.queue_on_filter).toBe(false);
     expect(body.routes.BUY.foo).toBe('bar');
   });
 
