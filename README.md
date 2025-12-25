@@ -203,6 +203,7 @@ Routes are stored under the `routes_config_v1` KV key. The admin API exposes GET
         "cooldown_sender_sec": 900,
         "cooldown_chat_sec": 180,
         "require_question_or_keywords": true,
+        "allow_reply_to_self_without_keywords": true,
         "keywords": ["خرید", "قیمت", "بخر"],
         "ignore_short_messages_lt": 3,
         "max_replies_per_chat_per_hour": 25,
@@ -211,7 +212,11 @@ Routes are stored under the `routes_config_v1` KV key. The admin API exposes GET
         "variation_closers": ["اگه سوال داری بپرس"],
         "emoji_pool": ["🙂", "😅", "👌"],
         "emoji_probability": 0.25,
-        "max_emojis": 1
+        "max_emojis": 1,
+        "queue_on_cooldown": true,
+        "queue_on_rate_limit": true,
+        "queue_on_probability": false,
+        "queue_on_filter": false
       }
     }
   }
@@ -226,6 +231,7 @@ Routes are stored under the `routes_config_v1` KV key. The admin API exposes GET
 - `typing_min_ms` / `typing_max_ms` (number ms 0–10000): typing indicator window; min/max are swapped if inverted.
 - `cooldown_sender_sec` / `cooldown_chat_sec` (number seconds 0–86400): rate-limit cooldowns.
 - `require_question_or_keywords` (boolean): whether to require a question or keyword hit.
+- `allow_reply_to_self_without_keywords` (boolean, default `true`): allow responses to self-authored messages even without keyword matches.
 - `keywords` (string[], max 50): trimmed, lowercased, unique keywords.
 - `ignore_short_messages_lt` (number 0–50): skip messages shorter than this length.
 - `max_replies_per_chat_per_hour` (number 0–1000): per-chat cap.
@@ -234,6 +240,10 @@ Routes are stored under the `routes_config_v1` KV key. The admin API exposes GET
 - `emoji_pool` (string[], max 20): candidate emojis.
 - `emoji_probability` (number 0–1): chance to append emojis.
 - `max_emojis` (number 0–2): upper bound for emoji count.
+- `queue_on_cooldown` (boolean, default `true`): enqueue sends when a sender/chat cooldown applies instead of dropping.
+- `queue_on_rate_limit` (boolean, default `true`): enqueue sends when upstream rate limits are hit.
+- `queue_on_probability` (boolean, default `false`): enqueue sends when blocked by reply probability.
+- `queue_on_filter` (boolean, default `false`): enqueue sends when filtered by keywords/length checks.
 
 Invalid humanize payloads return HTTP 400 with the offending field in the error code. All numeric fields are clamped to their allowed ranges, and defaults are automatically applied so every route returned by `GET /v1/routes` always includes a fully-populated `humanize` object.
 

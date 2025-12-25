@@ -19,6 +19,11 @@ export interface HumanizeConfig {
   emoji_pool?: string[];
   emoji_probability?: number;
   max_emojis?: number;
+  allow_reply_to_self_without_keywords?: boolean;
+  queue_on_cooldown?: boolean;
+  queue_on_rate_limit?: boolean;
+  queue_on_probability?: boolean;
+  queue_on_filter?: boolean;
 }
 
 export type NormalizedHumanizeConfig = Required<HumanizeConfig>;
@@ -46,7 +51,12 @@ export const RECOMMENDED_HUMANIZE_DEFAULTS: NormalizedHumanizeConfig = {
   variation_closers: ['اگه خواستی راهنمایی‌ت می‌کنم', 'بگو دقیقاً چی مدنظرتِ', 'اگه سوال داری بپرس'],
   emoji_pool: ['🙂', '😅', '👌'],
   emoji_probability: 0.25,
-  max_emojis: 1
+  max_emojis: 1,
+  allow_reply_to_self_without_keywords: true,
+  queue_on_cooldown: true,
+  queue_on_rate_limit: true,
+  queue_on_probability: false,
+  queue_on_filter: false
 };
 
 type NumericField =
@@ -97,7 +107,12 @@ export function normalizeHumanizeConfig(routeHumanize?: HumanizeConfig): Normali
     variation_closers: [],
     emoji_pool: [],
     emoji_probability: 0,
-    max_emojis: 1
+    max_emojis: 1,
+    allow_reply_to_self_without_keywords: true,
+    queue_on_cooldown: true,
+    queue_on_rate_limit: true,
+    queue_on_probability: false,
+    queue_on_filter: false
   };
 
   if (!routeHumanize) {
@@ -128,6 +143,30 @@ export function normalizeHumanizeConfig(routeHumanize?: HumanizeConfig): Normali
       'humanize.require_question_or_keywords'
     );
   }
+
+  if ('allow_reply_to_self_without_keywords' in humanize) {
+    normalized.allow_reply_to_self_without_keywords = asBoolean(
+      humanize.allow_reply_to_self_without_keywords,
+      'humanize.allow_reply_to_self_without_keywords'
+    );
+  }
+
+  if ('queue_on_cooldown' in humanize) {
+    normalized.queue_on_cooldown = asBoolean(humanize.queue_on_cooldown, 'humanize.queue_on_cooldown');
+  }
+
+  if ('queue_on_rate_limit' in humanize) {
+    normalized.queue_on_rate_limit = asBoolean(humanize.queue_on_rate_limit, 'humanize.queue_on_rate_limit');
+  }
+
+  if ('queue_on_probability' in humanize) {
+    normalized.queue_on_probability = asBoolean(humanize.queue_on_probability, 'humanize.queue_on_probability');
+  }
+
+  if ('queue_on_filter' in humanize) {
+    normalized.queue_on_filter = asBoolean(humanize.queue_on_filter, 'humanize.queue_on_filter');
+  }
+
   normalized.variation_openers = normalizeStringList(humanize.variation_openers, 'humanize.variation_openers', 20, false);
   normalized.variation_closers = normalizeStringList(humanize.variation_closers, 'humanize.variation_closers', 20, false);
   normalized.emoji_pool = normalizeStringList(humanize.emoji_pool, 'humanize.emoji_pool', 20, false);
