@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { createApp, fnv1a } from '../src/worker';
+import { normalizeHumanizeConfig, RECOMMENDED_HUMANIZE_DEFAULTS } from '../src/config';
 import type { Env } from '../src/worker';
 
 class MockKV {
@@ -278,5 +279,105 @@ describe('session lifecycle endpoints', () => {
     expect(Array.isArray(sessionsBody.sessions)).toBe(true);
     expect(sessionsBody.sessions.length).toBe(1);
     expect(sessionsBody.sessions[0].id).toBe('acct_auto');
+  });
+
+  it('normalizes humanize configs with clamping and cleanup', () => {
+    const normalized = normalizeHumanizeConfig({
+      reply_probability: 2,
+      delay_min_ms: 600_001,
+      delay_max_ms: -10,
+      typing_min_ms: 5_000,
+      typing_max_ms: 100_000,
+      cooldown_sender_sec: -5,
+      keywords: [' Test ', 'test', ''],
+      variation_openers: [' hi ', ''],
+      emoji_probability: 1.5,
+      max_emojis: 10
+    });
+
+    expect(normalized.reply_probability).toBe(1);
+    expect(normalized.delay_min_ms).toBe(0);
+    expect(normalized.delay_max_ms).toBe(600_000);
+    expect(normalized.typing_min_ms).toBe(5_000);
+    expect(normalized.typing_max_ms).toBe(10_000);
+    expect(normalized.cooldown_sender_sec).toBe(0);
+    expect(normalized.keywords).toEqual(['test']);
+    expect(normalized.variation_openers).toEqual(['hi']);
+    expect(normalized.emoji_probability).toBe(1);
+    expect(normalized.max_emojis).toBe(2);
+  });
+
+  it('returns humanize defaults when routes lack the field', async () => {
+    await env.SESSIONS_KV.put('routes_config_v1', JSON.stringify({ routes: { BUY: { foo: 'bar' } } }));
+
+    const response = await app.fetch(
+      new Request('https://example.com/v1/routes', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.routes.BUY.humanize.enabled).toBe(true);
+    expect(body.routes.BUY.humanize.max_emojis).toBe(1);
+    expect(body.routes.BUY.foo).toBe('bar');
+  });
+
+  it('stores normalized humanize configs on PUT', async () => {
+    const putRequest = new Request('https://example.com/v1/routes', {
+      method: 'PUT',
+      headers: AUTH_HEADER,
+      body: JSON.stringify({
+        routes: {
+          BUY: {
+            humanize: {
+              reply_probability: 2,
+              delay_min_ms: 1000,
+              delay_max_ms: 500,
+              keywords: ['Hello', 'hello']
+            }
+          }
+        }
+      })
+    });
+
+    const putResponse = await app.fetch(putRequest, env, executionContext());
+    expect(putResponse.status).toBe(200);
+    const stored = (await env.SESSIONS_KV.get('routes_config_v1', { type: 'json' })) as any;
+    expect(stored.routes.BUY.humanize.reply_probability).toBe(1);
+    expect(stored.routes.BUY.humanize.delay_min_ms).toBe(500);
+    expect(stored.routes.BUY.humanize.keywords).toEqual(['hello']);
+
+    const getResponse = await app.fetch(
+      new Request('https://example.com/v1/routes', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+    const getBody = (await getResponse.json()) as any;
+    expect(getBody.routes.BUY.humanize.delay_min_ms).toBe(500);
+    expect(getBody.routes.BUY.humanize.delay_max_ms).toBe(1000);
+  });
+
+  it('rejects invalid humanize payloads on PATCH', async () => {
+    const patchRequest = new Request('https://example.com/v1/routes/BUY', {
+      method: 'PATCH',
+      headers: AUTH_HEADER,
+      body: JSON.stringify({ humanize: { reply_probability: 'yes' } })
+    });
+
+    const patchResponse = await app.fetch(patchRequest, env, executionContext());
+    expect(patchResponse.status).toBe(400);
+    const errorBody = (await patchResponse.json()) as any;
+    expect(errorBody.error).toBe('humanize.reply_probability_number_required');
+  });
+
+  it('exposes recommended humanize defaults', async () => {
+    const response = await app.fetch(
+      new Request('https://example.com/v1/routes/humanize-defaults', { headers: AUTH_HEADER }),
+      env,
+      executionContext()
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.defaults).toEqual(RECOMMENDED_HUMANIZE_DEFAULTS);
   });
 });
